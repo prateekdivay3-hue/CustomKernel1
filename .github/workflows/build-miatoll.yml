@@ -97,15 +97,35 @@ jobs:
       - name: Generate and verify Miatoll configuration
         shell: bash
         run: |
-          set -euo pipefail
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- "$DEFCONFIG"
+          set -uo pipefail
 
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- "$DEFCONFIG" 2>&1 | tee defconfig.log
+          make_status=${PIPESTATUS[0]}
+          if [ "$make_status" -ne 0 ]; then
+            echo "::error::make $DEFCONFIG failed with status $make_status"
+            grep -Ei 'error|warning|unknown|undefined' defconfig.log | head -n 20 \
+              | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g; s/^/::error::/' || true
+            exit 1
+          fi
+
+          # Report every symbol we care about as a workflow annotation so a
+          # mismatch can be diagnosed straight from the run summary instead of
+          # hunting through the raw log.
+          for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_KPROBES_HOOK \
+                     CONFIG_KSU_SYSCALL_TABLE_HOOK CONFIG_KSU_DEBUG CONFIG_KSU_SUSFS \
+                     CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
+                     CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SUS_MAP \
+                     CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                     CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_NOMOUNT CONFIG_KPROBES \
+                     CONFIG_THREAD_INFO_IN_TASK CONFIG_64BIT; do
+            val="$(grep -m1 -- "$sym" out/.config || true)"
+            echo "::warning::kconfig ${sym} => ${val:-<absent from out/.config>}"
+          done
+
+          missing=()
           require_config() {
-            grep -qx "$1" out/.config || {
-              echo "Required configuration missing: $1" >&2
-              exit 1
-            }
+            grep -qx -- "$1" out/.config || missing+=("$1")
           }
 
           # KernelSU-Next v3.4.0-legacy: manual hook mode on this non-GKI 4.14
@@ -135,6 +155,13 @@ jobs:
           require_config 'CONFIG_BPF_JIT=y'
           require_config 'CONFIG_CGROUP_BPF=y'
           require_config '# CONFIG_MODULE_SIG_FORCE is not set'
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            for m in "${missing[@]}"; do
+              echo "::error::Required configuration missing: $m"
+            done
+            exit 1
+          fi
 
       - name: Build kernel, DTB, DTBO and modules
         shell: bash

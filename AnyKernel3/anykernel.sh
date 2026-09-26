@@ -6,8 +6,8 @@
 ## AnyKernel setup
 # begin properties
 properties() { '
-kernel.string=Stormbreaker KernelSU (SUSFS v2.3.0 + NoMount v2.0.0)
-kernel.compiler=Clang/LLVM 18 (LLVM=1, no GCC)
+kernel.string=Stormbreaker KernelSU-Next v3.4.0-legacy (SUSFS v2.3.0 + NoMount v2.0.0)
+kernel.compiler=LLVM (LLVM=1, no GCC)
 kernel.made=NothingTransition CI
 kernel.version=4.14.357-openela
 message.word=UNTESTED PRE-RELEASE for curtana / AOSP Infinity X (A-only, boot header v2). Flash at your own risk.

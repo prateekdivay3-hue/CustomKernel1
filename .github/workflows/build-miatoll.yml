@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - arena/01a0bfbb-customkernel1
+      - arena/01a0d315-customkernel1
     paths:
       - ".github/workflows/build-miatoll.yml"
       - "AnyKernel3/**"
@@ -57,8 +58,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison ccache clang flex git kmod libelf-dev libc6-dev lld llvm make \
-            libssl-dev python3 rsync zip
+            bc bison ccache clang clang-18 flex git kmod libelf-dev libc6-dev \
+            lld lld-18 llvm llvm-18 make libssl-dev python3 rsync zip
 
       - name: Restore compiler cache
         uses: actions/cache@v4
@@ -72,15 +73,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set -euo pipefail
+          # This kernel is only ever built with Clang 18 (the LLVM that ships on
+          # ubuntu-24.04). Nothing else is installed and nothing else is used,
+          # so fail fast if the runner image ever drifts.
+          clang_major="$(clang --version | head -n1 | sed -n 's/.*clang version \([0-9]\+\)\..*/\1/p')"
+          if [ "$clang_major" != "18" ]; then
+            echo "::error::expected clang 18, got: $(clang --version | head -n1)" >&2
+            exit 1
+          fi
           {
-            echo "Toolchain source: Ubuntu 24.04 LLVM"
+            echo "Toolchain source: Ubuntu 24.04 LLVM (clang-18 only)"
             clang --version
             ld.lld --version
             llvm-ar --version
             llvm-nm --version
             llvm-objcopy --version
-            for tool in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
-              command -v "$tool"
+            for tool in clang clang-18 ld.lld ld.lld-18 llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
+              command -v "$tool" || true
             done
           } | tee toolchain-info.txt
 
@@ -98,14 +108,14 @@ jobs:
             }
           }
 
+          # KernelSU-Next v3.4.0-legacy: manual hook mode on this non-GKI 4.14
+          # tree. No kprobes, and the syscall-table mode is rejected because it
+          # needs the >= 4.17 pt_regs syscall ABI.
           require_config 'CONFIG_KSU=y'
-          if grep -q '^CONFIG_KSU_KPROBES_KSUD=y' out/.config; then
-            echo 'Kprobe hooks must remain disabled for manual integration' >&2
-            exit 1
-          fi
-          require_config '# CONFIG_KSU_HACK_ARM64_BRANCH_LINK is not set'
-          require_config '# CONFIG_KSU_TAMPER_SYSCALL_TABLE is not set'
-          require_config 'CONFIG_KSU_LSM_SECURITY_HOOKS=y'
+          require_config 'CONFIG_KSU_MANUAL_HOOK=y'
+          require_config '# CONFIG_KSU_KPROBES_HOOK is not set'
+          require_config '# CONFIG_KSU_SYSCALL_TABLE_HOOK is not set'
+          require_config '# CONFIG_KSU_DEBUG is not set'
           require_config 'CONFIG_KSU_SUSFS=y'
           require_config 'CONFIG_KSU_SUSFS_SUS_PATH=y'
           require_config 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
@@ -165,7 +175,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Verify build products and KernelSU linkage
+      - name: Verify build products and KernelSU-Next linkage
         shell: bash
         run: |
           set -euo pipefail
@@ -174,7 +184,15 @@ jobs:
           test -s out/arch/arm64/boot/dtb.img
           test -s out/arch/arm64/boot/dtbo.img
           test -s out/arch/arm64/boot/dts/qcom/curtana-atoll-ab-idp-overlay.dtbo
-          test -s out/drivers/kernelsu/ksu.o
+          test -s out/drivers/kernelsu/kernelsu.o
+          test -s out/drivers/kernelsu/core/init.o
+          test -s out/drivers/kernelsu/supercall/supercall.o
+          test -s out/drivers/kernelsu/supercall/dispatch.o
+          test -s out/drivers/kernelsu/hook/setuid_hook.o
+          test -s out/drivers/kernelsu/hook/lsm_hooks.o
+          test -s out/drivers/kernelsu/feature/sucompat.o
+          test -s out/drivers/kernelsu/feature/kernel_umount.o
+          test -s out/drivers/kernelsu/selinux/selinux.o
           test -s out/fs/susfs.o
           test -s out/fs/nomount/nomount.o
 
@@ -182,10 +200,19 @@ jobs:
           # grep's early exit makes llvm-nm report EPIPE (exit 74).
           llvm-nm out/vmlinux > vmlinux.sym
           grep -q ' ksu_handle_execveat$' vmlinux.sym
+          grep -q ' ksu_handle_faccessat$' vmlinux.sym
+          grep -q ' ksu_handle_stat$' vmlinux.sym
+          grep -q ' ksu_handle_newfstat_ret$' vmlinux.sym
+          grep -q ' ksu_handle_fstat64_ret$' vmlinux.sym
           grep -q ' ksu_handle_sys_reboot$' vmlinux.sym
+          grep -q ' ksu_handle_setresuid$' vmlinux.sym
+          grep -q ' ksu_lsm_hook_init$' vmlinux.sym
           grep -q ' kernelsu_init$' vmlinux.sym
+          # SUSFS glue: driver -> fs/susfs.c
+          grep -q ' ksu_handle_susfs_cmd$' vmlinux.sym
           grep -q ' susfs_init$' vmlinux.sym
           grep -q ' susfs_add_sus_map$' vmlinux.sym
+          grep -q ' susfs_is_current_ksu_domain$' vmlinux.sym
           grep -q ' nomount_init$' vmlinux.sym
 
           make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -234,7 +261,7 @@ jobs:
           (
             cd package
             zip -r9 \
-              "../artifacts/Stormbreaker-miatoll-KSU-SUSFS-NoMount-UNTESTED-${GITHUB_RUN_NUMBER}.zip" .
+              "../artifacts/Stormbreaker-miatoll-KSUN-SUSFS-NoMount-UNTESTED-${GITHUB_RUN_NUMBER}.zip" .
           )
 
           # Raw images + metadata alongside the flashable zip
@@ -278,10 +305,10 @@ jobs:
           set -euo pipefail
           # gh release download (authenticated) avoids anonymous rate limits
           # and follows asset redirects; exact tags pinned for reproducibility.
-          gh release download v3.3.0-51 -R backslashxx/KernelSU \
-            -p 'KernelSU_v3.3.0-51_*-release.apk' -D release-assets
-          mv release-assets/KernelSU_v3.3.0-51_*-release.apk \
-             release-assets/KernelSU-manager.apk
+          gh release download v3.4.0 -R KernelSU-Next/KernelSU-Next \
+            -p 'KernelSU_Next_v3.4.0_*-release.apk' -D release-assets
+          mv release-assets/KernelSU_Next_v3.4.0_*-release.apk \
+             release-assets/KernelSU-Next-manager.apk
           gh release download v0.0.68 -R rrr333nnn333/BRENE \
             -p 'BRENE-v0.0.68.zip' -D release-assets
           gh release download v2.0.0 -R maxsteeel/nomount \
@@ -289,7 +316,7 @@ jobs:
           mv release-assets/NoMount-v2.0.0-release.zip \
              release-assets/NoMount-v2.0.0.zip
           # sanity: all three must be zip/apk archives
-          head -c2 release-assets/KernelSU-manager.apk | grep -q PK
+          head -c2 release-assets/KernelSU-Next-manager.apk | grep -q PK
           head -c2 release-assets/BRENE-v0.0.68.zip | grep -q PK
           head -c2 release-assets/NoMount-v2.0.0.zip | grep -q PK
           ls -la release-assets/
@@ -317,10 +344,10 @@ jobs:
           gh release create "$TAG" \
             --prerelease \
             --target "$GITHUB_SHA" \
-            --title "Stormbreaker — KernelSU v3.3.0-51 + SUSFS v2.3.0 + NoMount + BBR (curtana / Infinity X)" \
+            --title "Stormbreaker — KernelSU-Next v3.4.0-legacy + SUSFS v2.3.0 + NoMount + BBR (curtana / Infinity X)" \
             --notes-file release-notes.md \
             release-assets/Stormbreaker-miatoll-*.zip \
-            release-assets/KernelSU-manager.apk \
+            release-assets/KernelSU-Next-manager.apk \
             release-assets/BRENE-v0.0.68.zip \
             release-assets/NoMount-v2.0.0.zip
           gh release view "$TAG" --json url --jq '.url'

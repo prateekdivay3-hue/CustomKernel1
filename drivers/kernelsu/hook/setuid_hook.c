@@ -1,56 +1,92 @@
-static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+#include <linux/compiler.h>
+#include <linux/version.h>
+#include <linux/sched/signal.h>
+#include <linux/slab.h>
+#include <linux/task_work.h>
+#include <linux/thread_info.h>
+#include <linux/seccomp.h>
+#include <linux/printk.h>
+#include <linux/sched.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/uaccess.h>
+#include <linux/uidgid.h>
+
+#include "policy/allowlist.h"
+#include "hook/setuid_hook.h"
+#include "klog.h" // IWYU pragma: keep
+#include "manager/manager_identity.h"
+#include "infra/seccomp_cache.h"
+#include "supercall/supercall.h"
+#include "hook/hook_manager.h"
+#include "feature/kernel_umount.h"
+#include "compat/kernel_compat.h"
+
+// Stormbreaker: upstream declares this as
+//   extern void disable_seccomp(struct task_struct *tsk);
+// but the only definition in the tree (policy/app_profile.c) is
+//   void disable_seccomp(void)
+// Two different prototypes for the same symbol are a hard compile error, and
+// this < 5.10 branch is the one a 4.14 kernel actually takes. Declared here
+// with the real (void) signature instead.
+extern void disable_seccomp(void);
+
+int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
 {
-#ifdef CONFIG_KSU_SUSFS
-	bool is_susfs_app;
+    // we rely on the fact that zygote always call setresuid(3) with same uids
+
+    pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+
+    if (unlikely(is_uid_manager(new_uid))) {
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+        if (current->seccomp.mode == SECCOMP_MODE_FILTER && current->seccomp.filter) {
+            ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+        }
+#else
+		disable_seccomp();
 #endif
 
-	if (!new || !old)
-		return;
-
-	uid_t new_uid = ksu_get_uid_t(new->uid);
-	uid_t old_uid = ksu_get_uid_t(old->uid);
-
-	// old process is not root, ignore it.
-	if (unlikely(!!old_uid))
-		return;
-
-	if (IS_ENABLED(CONFIG_KSU_DEBUG))
-		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
-
-	// we dont have those new fancy things upstream has
-	// lets just do the original thing where we disable seccomp
-	if (unlikely(is_uid_manager(new_uid)))
-		goto install_ksu_fd;
-
-	if (ksu_is_allow_uid_for_current(new_uid))
-		goto kill_seccomp;
-
-#ifdef CONFIG_KSU_SUSFS
-	is_susfs_app = is_appuid(new_uid) || is_isolated_process(new_uid) ||
-		       new_uid == WEBVIEW_ZYGOTE_UID;
-
-	if (is_susfs_app)
-		susfs_set_current_proc_umounted();
+#ifdef KSU_KPROBES_HOOK
+        ksu_set_task_tracepoint_flag(current);
 #endif
 
-	// Handle kernel umount
-	ksu_handle_umount(new, old);
-#ifdef CONFIG_KSU_SUSFS
-	/* Re-apply looped path marks only after namespace unmount work has
-	 * completed. The work item is coalesced safely if several zygote
-	 * children arrive at once.
-	 */
-	if (is_susfs_app)
-		schedule_work(&susfs_extra_works);
+        pr_info("install fd for manager: %d\n", new_uid);
+        ksu_install_fd();
+        return 0;
+    }
+
+    if (ksu_is_allow_uid_for_current(new_uid)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+        if (current->seccomp.mode == SECCOMP_MODE_FILTER && current->seccomp.filter) {
+            ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+        }
+#else
+		disable_seccomp();
 #endif
-	return;
 
-install_ksu_fd:
-	pr_info("install fd for manager: %d\n", new_uid);
-	ksu_install_fd();
+#ifdef KSU_KPROBES_HOOK
+		ksu_set_task_tracepoint_flag(current);
+#endif
+	} else {
+#ifdef KSU_KPROBES_HOOK
+		ksu_clear_task_tracepoint_flag_if_needed(current);
+#endif
+    }
 
-kill_seccomp:
-	disable_seccomp();
-	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-	return;
+    // Handle kernel umount
+    ksu_handle_umount(old_uid, new_uid);
+
+    return 0;
+}
+
+void __init ksu_setuid_hook_init(void)
+{
+	ksu_kernel_umount_init();
+}
+
+void __exit ksu_setuid_hook_exit(void)
+{
+	pr_info("ksu_core_exit\n");
+	ksu_kernel_umount_exit();
 }

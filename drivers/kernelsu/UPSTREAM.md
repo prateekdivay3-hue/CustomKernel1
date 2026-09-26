@@ -1,74 +1,143 @@
-# KernelSU upstream provenance
+# Upstream provenance — `drivers/kernelsu`
 
-This directory vendors the kernel component from:
+## What this is
 
-- Repository: https://github.com/backslashxx/KernelSU
-- Tag: `v3.3.0-51` (KSU_VERSION 32651)
-- Commit: `d7e36bd05323224c88f105836ae6478b7ee07db9`
-- Note: at this tag upstream's manager APK reports 32653 while the kernel
-  tree reports 32651 (upstream's own skew); we mirror the kernel value.
+KernelSU-Next **v3.4.0-legacy**, vendored from
+<https://github.com/KernelSU-Next/KernelSU-Next>.
 
-## Sync history
+| | |
+|---|---|
+| tag | `v3.4.0-legacy` |
+| commit | `8af3d4fec33be32fa5d3f8dae4f380fac45bf2cd` |
+| branch | `legacy` |
+| imported from | `kernel/` (the whole driver tree, minus build helpers) |
+| licence | GPL-2.0 (`LICENSE` is upstream's, unmodified) |
+| driver version | `33294` = `30000 + 3005 (commits) + 289`, matching the v3.4.0 manager `versionCode` |
 
-- 2026-09-24: manual sync `v3.3.0-48` -> `v3.3.0-51`. Taken upstream:
-  `Makefile` (32649 -> 32651), `include/arch.h` (symbol table rework; only
-  consumed by kprobe code that is not compiled in this tree -- CONFIG_KPROBES
-  is off and kp_ksud.c is not referenced by any Makefile), `hook/kp_ksud.c`
-  (PT_REGS_SYSCALL_PARM1 fixes, same dead-code status), `hook/lsm_hooks_list.c`
-  (#if 0 demo + comment), `kernel_includes.h` (+linux/key.h), `include/util.h`
-  (riscv branch, PT_REGS_SYSCALL_PARM1 in dead >=4.19 path, ksu_sys_umount
-  int->long), `kernel_compat.h` (ksu_sys_umount long + cast on the live <5.9
-  path, <3.11 iterate_dir wrapper dead here, session-keyring grab reworked
-  onto lookup_user_key() which exists on 4.14). Kept local: the usual six
-  SUSFS-carrying files (dispatch.c keeps our atomic one-shot + sdcard monitor).
-- 2026-09-23: manual sync `v3.3.0-43` -> `v3.3.0-48` (16 files reviewed).
-  Taken upstream wholesale: `Makefile` (version), `INTERNAL.md`,
-  `feature/selinux_hide.h` (cpu type + printk fmt), `hook/lsm_hooks_list.c`
-  (error codes + ksym verification; LKM-only bruteforce path is compile-
-  guarded and inactive in our built-in build), `kernel_compat.h` and
-  `include/util.h` (reworked ksyscall machinery and <4.14 compat layer --
-  both dead code on this 4.14.357 tree, live <5.9 paths unchanged in
-  behavior), `selinux/rules.c` (>=5.10 RCU-deref fix, dead code here),
-  whitespace-only `kernel_includes.h`, `feature/kernel_umount.c`,
-  `manager/throne_tracker.c`. Kept local: `ksu.c`, `hook/setuid_hook.c`,
-  `selinux/selinux.c`, `supercall/supercall.c`, `supercall/dispatch.c`,
-  `Kconfig` -- these carry the SUSFS v2.3.0 integration blocks.
-  Note: upstream deleted the `v3.3.0-43` and `v3.3.0-47` tags, so the sync
-  was diffed directly against `v3.3.0-48`.
+### Why the `-legacy` tag and not plain `v3.4.0`
 
-It is integrated in-tree for the Linux 4.14 non-GKI Miatoll kernel. The
-scope-minimized manual hooks are based on backslashxx/KernelSU issue #5,
-manual-hooks revision v2.3. Kprobe, syscall-table tampering, and ARM64
-branch-link hooks are intentionally disabled in the Miatoll defconfig.
+`v3.4.0` (and `v3.3.0`) are **GKI-only**. Their `Kconfig` gates `KSU` on
+`KPROBES && EXT4_FS`, they ship no manual-hook mode at all, and the oldest
+kernel version referenced anywhere in their sources is **5.9**. Their releases
+only contain prebuilt `.ko` modules for 5.10 – 6.18.
 
-## SUSFS v2.3.0 (non-GKI 4.14 semantic port)
+Non-GKI support lives on the separate `legacy` branch, which is tagged
+`v3.0.1-legacy`, `v3.1.0-legacy`, `v3.2.0-legacy`, `v3.4.0-legacy` (there is no
+`v3.3.0-legacy`). The legacy line carries the compat layer for old kernels
+(version gates down to 3.16/3.18, an explicit `LINUX_VERSION_CODE < 4.17`
+"native syscall ABI" branch in `include/util.h`) and three hook modes:
 
-- SUSFS_VERSION: v2.3.0 (was v2.2.0)
-- Upstream kernel changes by simonpunk/sidex15, Sep 12-13 2026, version-bump
-  commit `a64889c` ("fs: susfs: bump version to v2.3.0"); GKI branches of
-  https://gitlab.com/simonpunk/susfs4ksu track this series.
-- 4.14 semantic-port reference: https://github.com/star-star-dev/M62-backport
-  pull request #3 (merged 2026-09-22), itself built from the same upstream
-  commit series. Symbols unavailable on 4.14 (STATX_MNT_ID, zygote_next
-  hooks, kstat.mnt_id) are omitted as no-ops, matching that reference.
-- Local adaptations on top of the reference:
-  - `susfs_get_non_sus_vfsmnt_from_vfsmnt()` may return NULL in this tree
-    (audit-hardened reference contract); `susfs_mark_inode_sus_kstat()` and
-    `vfs_statfs()` keep NULL-safe fallbacks instead of dereferencing.
-  - fdinfo/maps spoofing keeps this lineage's direct inode-metadata design
-    (susfs_show_map_vma_spoofer) with the new v2.3.0 app-uid gating.
-  - `get_anon_bdev()` KSU minor-dev hook adapted to the 4.14 ida API
-    (ida_pre_get/ida_get_new_above).
+| mode | config | usable on this 4.14 tree? |
+|---|---|---|
+| manual hooks | `CONFIG_KSU_MANUAL_HOOK` | **yes** — this is what we use |
+| kprobes/tracepoints | `CONFIG_KSU_KPROBES_HOOK` | no (GKI 5.10+ only) |
+| syscall table patching | `CONFIG_KSU_SYSCALL_TABLE_HOOK` | **no** — `hook/syscall_table_hook.c` `#error`s below 4.17 because the `__arm64_sys_*` pt_regs ABI does not exist |
 
-## Audit hardening batch (2026-09-23)
+`KSU_MANUAL_HOOK` defaults to `y if !KPROBES`, and its only build-time
+requirement is a `ksu_handle_sys_reboot` hook in `kernel/reboot.c`, which this
+tree has had since the original KernelSU integration.
 
-- fs/statfs.c: ported upstream susfs fix 769e31fbe ("SUS_KSTAT: Fix wrong
-  spoofing logic in vfs_statfs()") — the KSTAT path now returns the spoofed
-  kstatfs as-is (f_flags no longer recalculated from the real mount); the
-  SUS_MOUNT same-mount path recalculates f_flags from the caller's mount;
-  the now-unused bypass_orig_flow label in vfs_statfs was removed.
-- include/linux/susfs_def.h: SUSFS_IS_INODE_* macro arguments parenthesized.
-- supercall/dispatch.c: EVENT_POST_FS_DATA one-shot guard converted from a
-  non-atomic bool to atomic_cmpxchg (side effects must run exactly once).
-- Kconfig: KSU_SUSFS now depends on FUSE_FS (fs/susfs.c includes
-  fuse/fuse_i.h and links get_fuse_inode(), which needs built-in FUSE).
+## Local deviations
+
+Everything below is *ours*, not upstream's. `INTERNAL.md` covers the kernel-tree
+side.
+
+### 1. Vendored-build version detection (`Kbuild`)
+
+Upstream derives the reported version from `git rev-list --count HEAD` of the
+driver's own repository. A vendored copy has no such repository, so the Kbuild
+now reads `.ksu-version` / `.ksu-tag` (shipped next to it) and back-computes the
+equivalent commit count, leaving the rest of the upstream logic — including the
+`KSU_VERSION_OVERRIDE` / `KSU_VERSION_TAG_OVERRIDE` escape hatches — untouched.
+
+`.ksu-commit` and `.ksu-branch` are informational only (nothing in the build
+reads them).
+
+### 2. No build-time patching of the kernel tree
+
+Upstream's Kbuild `sed`-patches the kernel sources for old-kernel gaps. On this
+tree **none of them are needed**, because the relevant compatibility already
+exists upstream in 4.14.357-openela:
+
+* `fs/namespace.c` already has `can_umount()` and `path_umount()`
+* `security/selinux/include/objsec.h` already has `selinux_inode()`,
+  `selinux_cred()` and `current_sid()`, and `hooks.c`/`selinuxfs.c`/`xfrm.c`
+  already use them
+* `security/selinux/include/security.h` already has `struct selinux_state`
+
+The one patch that *would* have fired adds `atomic_t filter_count;` to
+`struct seccomp`. That field is only read by `infra/seccomp_cache.c`, which is
+compiled out below 5.10, so it was dead weight — and it would have silently
+modified the kernel sources on every build. It is removed and the Kbuild no
+longer rewrites the tree at all, so the build is reproducible from what is
+committed.
+
+### 3. `disable_seccomp()` prototype conflict (`hook/setuid_hook.c`)
+
+Upstream declares
+
+```c
+extern void disable_seccomp(struct task_struct *tsk);
+```
+
+but the only definition in the driver, `policy/app_profile.c`, is
+`void disable_seccomp(void)`. Two prototypes for one symbol is a hard compile
+error, and the branch that declares it is exactly the `< 5.10` branch a 4.14
+kernel takes. Fixed here by declaring the real `(void)` prototype.
+
+### 4. SUSFS support (re-added)
+
+KernelSU-Next **removed** SUSFS upstream (`kernel: purge SuSFS remnants`), so
+`v3.4.0-legacy` has no SUSFS code at all. This tree keeps the full SUSFS v2.3.0
+feature set (`fs/susfs.c`), so the driver side is re-added here:
+
+* `Kconfig` — `CONFIG_KSU_SUSFS` plus the ten feature switches. Upstream's
+  legacy Kconfig keeps SUSFS as a separate driver *version*; here it is a
+  standalone option so it combines with whichever hook mode is selected.
+* `supercall/supercall.c` + `supercall/dispatch.c` — `magic2 == SUSFS_MAGIC`
+  dispatches to `ksu_handle_susfs_cmd()`, which forwards to `fs/susfs.c`.
+* `selinux/selinux.c` — the `susfs_*` SID helpers `fs/susfs.c` calls back into.
+* `core/init.c` — `susfs_init()`.
+* `runtime/boot_event.c` — `susfs_start_sdcard_monitor_fn()`.
+* `feature/kernel_umount.c` — mark the process `TIF_PROC_UMOUNTED` and schedule
+  `susfs_extra_works`.
+
+The reference for how KSUN and SUSFS coexist is the same approach used by
+KernelSU-Next's own `susfs/legacy` lineage and by crDroid's 4.14.357 sm8150
+kernel (which runs KSUN + SUSFS v2.3.0 on the identical base version): the
+umount marking is deliberately made independent of `ksu_kernel_umount_enabled`
+/`ksu_module_mounted`, otherwise hiding silently breaks when umount is disabled
+or no module is mounted.
+
+### 5. `ksu_init_rc_hook` duplicate symbol (`runtime/ksud_integration.c`)
+
+`fs/susfs.c` exports
+
+```c
+DEFINE_STATIC_KEY_FALSE(ksu_init_rc_hook_key_false);
+extern struct static_key_false ksu_init_rc_hook
+        __attribute__((alias("ksu_init_rc_hook_key_false")));
+```
+
+while the driver defines `bool ksu_init_rc_hook __read_mostly = true;`. With
+SUSFS enabled that is a duplicate symbol at link time, so under
+`CONFIG_KSU_SUSFS` the driver uses its own static key
+(`ksu_is_init_rc_hook_enabled`) instead and `stop_init_rc_hook()` disables that
+key.
+
+## Hook ABI
+
+The driver's signatures match this tree's kernel-core hooks exactly, so no
+kernel-core changes were needed for the swap:
+
+| kernel core | driver |
+|---|---|
+| `fs/exec.c` | `ksu_handle_execveat(int *, struct filename **, void *, void *, int *)` |
+| `fs/open.c` | `ksu_handle_faccessat(int *, const char __user **, int *, int *)` |
+| `fs/stat.c` | `ksu_handle_stat(int *, const char __user **, int *)` |
+| `fs/stat.c` | `ksu_handle_newfstat_ret(unsigned int *, struct stat __user **)` |
+| `fs/stat.c` | `ksu_handle_fstat64_ret(unsigned long *, struct stat64 __user **)` |
+| `kernel/reboot.c` | `ksu_handle_sys_reboot(int, int, unsigned int, void __user **)` |
+
+`ksu_handle_setresuid()` is reached through the LSM `task_fix_setuid` hook, so
+`kernel/sys.c` needs no patch either.

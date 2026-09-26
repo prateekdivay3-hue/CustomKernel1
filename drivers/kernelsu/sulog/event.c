@@ -51,6 +51,20 @@ struct compat_sulog_entry {
 } __attribute__((packed));
 
 #define COMPAT_SULOG_MAX 250
+
+#if KERNEL_VERSION(4, 19, 0) > LINUX_VERSION_CODE
+// Stormbreaker: before 4.19 the boot-time clock helper takes struct timespec,
+// not struct timespec64. Bridge the two so callers below can use timespec64
+// unconditionally, matching the >= 4.19 path.
+static inline void ksu_sulog_boottime_ts64(struct timespec64 *ts)
+{
+	struct timespec t;
+
+	get_monotonic_boottime(&t);
+	ts->tv_sec = t.tv_sec;
+	ts->tv_nsec = t.tv_nsec;
+}
+#endif
 static struct compat_sulog_entry compat_sulog_buf[COMPAT_SULOG_MAX];
 static uint8_t compat_sulog_idx = 0;
 static DEFINE_SPINLOCK(compat_sulog_lock);
@@ -64,7 +78,7 @@ void ksu_compat_sulog(uint8_t sym)
 #if KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
 	ktime_get_boottime_ts64(&ts);
 #else
-	get_monotonic_boottime(&ts);
+	ksu_sulog_boottime_ts64(&ts);
 #endif
     entry.s_time = (uint32_t)ts.tv_sec;
     entry.data = (uint32_t)uid;
@@ -99,7 +113,7 @@ int ksu_sulog_handle_compat_dump(void __user *uptr)
 #if KERNEL_VERSION(4, 19, 0) <= LINUX_VERSION_CODE
 	ktime_get_boottime_ts64(&ts);
 #else
-	get_monotonic_boottime(&ts);
+	ksu_sulog_boottime_ts64(&ts);
 #endif
     uptime = (uint32_t)ts.tv_sec;
     if (copy_to_user((void __user *)(uintptr_t)sbuf.uptime_ptr, &uptime, sizeof(uptime)))

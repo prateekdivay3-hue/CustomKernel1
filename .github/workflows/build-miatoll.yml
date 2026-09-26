@@ -109,9 +109,9 @@ jobs:
             exit 1
           fi
 
-          # Report every symbol we care about as a workflow annotation so a
-          # mismatch can be diagnosed straight from the run summary instead of
-          # hunting through the raw log.
+          # One annotation carrying the whole dump: the annotations API only
+          # keeps the first handful, so joining them keeps the full picture.
+          dump=""
           for sym in CONFIG_KSU CONFIG_KSU_MANUAL_HOOK CONFIG_KSU_KPROBES_HOOK \
                      CONFIG_KSU_SYSCALL_TABLE_HOOK CONFIG_KSU_DEBUG CONFIG_KSU_SUSFS \
                      CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
@@ -120,12 +120,25 @@ jobs:
                      CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_NOMOUNT CONFIG_KPROBES \
                      CONFIG_THREAD_INFO_IN_TASK CONFIG_64BIT; do
             val="$(grep -m1 -- "$sym" out/.config || true)"
-            echo "::warning::kconfig ${sym} => ${val:-<absent from out/.config>}"
+            dump+="${sym}=${val:-absent} | "
           done
+          echo "::warning::kconfig dump: ${dump}"
 
           missing=()
           require_config() {
             grep -qx -- "$1" out/.config || missing+=("$1")
+          }
+
+          # "Off" must not be asserted with an exact line match: kconfig drops
+          # choice members from .config entirely when the choice's depends on
+          # is false. KSU_SYSCALL_TABLE_HOOK and KSU_KPROBES_HOOK live in a
+          # choice gated on !KSU_MANUAL_HOOK, so with manual hooks on they are
+          # simply absent -- which means n, exactly what we want. Assert on
+          # "is it enabled?", which is the property that actually matters.
+          require_config_off() {
+            if grep -qx -- "$1=y" out/.config || grep -qx -- "$1=m" out/.config; then
+              missing+=("$1 must be off")
+            fi
           }
 
           # KernelSU-Next v3.4.0-legacy: manual hook mode on this non-GKI 4.14
@@ -133,9 +146,9 @@ jobs:
           # needs the >= 4.17 pt_regs syscall ABI.
           require_config 'CONFIG_KSU=y'
           require_config 'CONFIG_KSU_MANUAL_HOOK=y'
-          require_config '# CONFIG_KSU_KPROBES_HOOK is not set'
-          require_config '# CONFIG_KSU_SYSCALL_TABLE_HOOK is not set'
-          require_config '# CONFIG_KSU_DEBUG is not set'
+          require_config_off 'CONFIG_KSU_KPROBES_HOOK'
+          require_config_off 'CONFIG_KSU_SYSCALL_TABLE_HOOK'
+          require_config_off 'CONFIG_KSU_DEBUG'
           require_config 'CONFIG_KSU_SUSFS=y'
           require_config 'CONFIG_KSU_SUSFS_SUS_PATH=y'
           require_config 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
@@ -145,7 +158,7 @@ jobs:
           require_config 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
           require_config 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
           require_config 'CONFIG_NOMOUNT=y'
-          require_config '# CONFIG_KPROBES is not set'
+          require_config_off 'CONFIG_KPROBES'
           require_config 'CONFIG_EROFS_FS=y'
           require_config 'CONFIG_EROFS_FS_ZIP=y'
           require_config 'CONFIG_EROFS_FS_SECURITY=y'
@@ -154,7 +167,7 @@ jobs:
           require_config 'CONFIG_BPF_SYSCALL=y'
           require_config 'CONFIG_BPF_JIT=y'
           require_config 'CONFIG_CGROUP_BPF=y'
-          require_config '# CONFIG_MODULE_SIG_FORCE is not set'
+          require_config_off 'CONFIG_MODULE_SIG_FORCE'
 
           if [ "${#missing[@]}" -gt 0 ]; then
             for m in "${missing[@]}"; do
